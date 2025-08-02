@@ -1,0 +1,6 @@
+python-dotenv
+fastapi
+pydantic
+google-oauth2
+gspread
+requests
