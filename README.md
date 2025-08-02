@@ -1,0 +1,1 @@
+# kset-verifikator-2025
