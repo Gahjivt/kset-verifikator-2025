@@ -1,94 +1,139 @@
-# Discord Bot za Upravljanje Članstvom
+# Discord Verifikator Backend
 
-Ovaj Discord bot je dizajniran za automatizaciju verifikacije korisnika i upravljanja ulogama na vašem serveru na temelju statusa članstva i sekcijske pripadnosti. Integrira se s vanjskom OAuth uslugom i PostgreSQL bazom podataka kako bi uloge korisnika bile sinkronizirane.
+Ovo je backend servis za Discord verifikacijski sustav. Omogućuje provjeru korisničkih email adresa na temelju podataka iz Google Sheeta te autentikaciju putem Google OAuth-a. Također koristi PostgreSQL za praćenje pokušaja verifikacije.
 
+Kod se pokrece preko nardbe:
+python -m uvicorn verifikator:app --reload
 ---
 
 ## Značajke
 
-* **Verifikacija korisnika putem OAutha:** Članovi mogu koristiti slash naredbu `/register` za pokretanje OAuth procesa, povezujući svoj Discord račun s verificiranom e-mail adresom.
-
-* **Automatsko dodjeljivanje uloga:** Automatski dodjeljuje Discord uloge (npr. "Plavi", "Narančasti", "Crveni") na temelju verificiranog statusa članstva korisnika preuzetog iz vanjske usluge.
-
-* **Upravljanje sekcijskim ulogama:** Dodjeljuje specifične sekcijske uloge (npr. "Comp", "Tech", "Glazbena", "Foto" itd.) korisnicima na temelju njihove verificirane sekcijske pripadnosti.
-
-* **Dnevne provjere statusa članstva:** Planirani zadatak se pokreće svakodnevno kako bi ponovno verificirao status članstva svih registriranih korisnika u odnosu na vanjsku uslugu i ažurira njihove uloge ako se otkriju bilo kakve promjene. Korisnici s ulogom "Crveni" automatski se preskaču iz ovih provjera.
-
-* **Integracija s PostgreSQL bazom podataka:** Sigurno pohranjuje verificirane Discord ID-ove korisnika i njihove pridružene privatne e-mail adrese za održavanje trajnih podataka.
+- FastAPI REST backend
+- Učitavanje podataka iz Google Sheeta (gspread + service account)
+- OAuth verifikacija putem Google računa
+- Provjera pojedinačnih i višestrukih email adresa
+- Redis-style cache s dnevnim osvježavanjem
+- PostgreSQL baza za praćenje verifikacijskih pokušaja
 
 ---
 
-## Početak rada
+## Ovisnosti
 
-Slijedite ove korake za pokretanje vašeg Discord bota za članstvo.
+- `fastapi`
+- `uvicorn`
+- `python-dotenv`
+- `google-auth`
+- `gspread`
+- `psycopg2`
+- `requests`
+- `pydantic`
 
-### Preduvjeti
+Instaliraj sve ovisnosti:
 
-Prije nego što počnete, provjerite imate li instalirano i postavljeno sljedeće:
+```bash
+pip install -r requirements.txt
+```
 
-* **Python 3.8+**: Preuzmite s [python.org](https://www.python.org/downloads/).
+---
 
-* **PostgreSQL poslužitelj baze podataka**: Provjerite je li PostgreSQL instanca pokrenuta i dostupna.
+## Konfiguracija (`.env`)
 
-* **Discord Bot aplikacija i token**:
+Postavi sljedeće varijable u `.env` datoteku:
 
-    1.  Idite na [Discord Developer Portal](https://discord.com/developers/applications).
+```env
+# Google service account
+GOOGLE_KEY_PATH=./service_account.json
+SPREADSHEET_ID=...
+SPREADSHEET_SHEET_ID=0
+SPREADSHEET_USER=ime@kset.hr
 
-    2.  Stvorite novu aplikaciju.
+# OAuth
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=http://localhost:8000/oauth/callback
 
-    3.  Pod "Bot" dodajte bota i kopirajte njegov token.
+# PostgreSQL baza
+DB_HOST=localhost
+DB_USER=korisnik
+DB_PASSWORD=lozinka
+DB_NAME=verifikacija
+```
 
-    4.  Omogućite `PRESENCE INTENT` i `MESSAGE CONTENT INTENT` pod odjeljkom "Privileged Gateway Intents".
+---
 
-* **ID Discord poslužitelja**: Možete ga dobiti omogućavanjem Developer Modea u Discord postavkama, desnim klikom na vaš poslužitelj i odabirom "Copy ID".
+## Arhitektura
 
-* **Vanjska pozadinska usluga (Backend)**: Ovaj bot se oslanja na vanjsku uslugu (u kodu nazvanu "backend") koja radi na `http://localhost:8000`. Ova usluga je ključna za:
+- `GET /oauth/callback`: Prima `code` i `state`, dohvaća email od Googlea i validira ga protiv Google Sheeta
+- `POST /verify-email`: Prima jedan email i traži ga u sheetu
+- `POST /verify-emails`: Prima listu emailova i vraća info za one koji su pronađeni
+- `POST /generate-oauth-link`: Generira OAuth URL s unikatnim `state`
+- `GET /oauth/status`: Provjerava status verifikacije na temelju `state`
+- `POST /refresh-cache`: Ručno osvježava cache iz Google Sheeta
+- `POST /clear-cache`: Briše cache (korisno za testiranje)
 
-    * Generiranje OAuth veza.
+---
 
-    * Rukovanje OAuth povratnim pozivom.
+## Pokretanje lokalno
 
-    * Pružanje statusa članstva korisnika i informacija o sekciji na temelju njihove e-mail adrese.
+```bash
+uvicorn app:app --reload
+```
 
-    * Bot **neće ispravno funkcionirati bez pokrenute pozadinske usluge.**
+---
 
-### Instalacija
+## Baza podataka
 
+Koristi se `verification_attempts` tablica:
 
-1.  **Stvorite Python virtualno okruženje**
+```sql
+CREATE TABLE verification_attempts (
+    state TEXT PRIMARY KEY,
+    izvor TEXT NOT NULL,
+    email TEXT,
+    status TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    used_at TIMESTAMP WITH TIME ZONE
+);
+```
 
-    ```bash
-    python -m venv venv
-    ```
+Statusi mogu biti:
+- `pending` — kreiran pokušaj, čeka na korisnika
+- `success` — email je uspješno verificiran
+- `fail` — OAuth uspješan, ali email nije pronađen
+- `expired` — link istekao (više od 5 min)
 
-2.  **Aktivirajte virtualno okruženje**:
+---
 
-    * **Windows**:
+## OAuth logika
 
-        ```bash
-        .\venv\Scripts\activate
-        ```
+1. Discord bot traži `/generate-oauth-link` s unikatnim `state`
+2. Korisnik klikne na link, prolazi kroz Google OAuth
+3. Nakon `callback`, backend dohvaća email korisnika
+4. Ako se email nalazi u Google Sheet-u, veza se označava kao `success`
+5. `/oauth/status` endpoint može se koristiti za polling s frontenda
 
-    * **macOS/Linux**:
+---
 
-        ```bash
-        source venv/bin/activate
-        ```
+## Napomene
 
-3.  **Instalirajte ovisnosti**:
-    Stvorite datoteku `requirements.txt` u korijenskom direktoriju vašeg projekta sa sljedećim sadržajem:
+- Verifikacija se temelji na kolumnama: `KSET e-pošta`, `Privatna e-pošta`, `Ime i prezime`, `Matična sekcija`, `Trenutna vrsta članstva`
+- Cache se automatski osvježava jednom dnevno (nakon 06:47)
+- Ako je email pronađen u sheetu, prikazuje se korisnički info
 
-    ```
-    discord.py
-    aiohttp
-    psycopg2-binary
-    python-dotenv
-    ```
+---
 
-    Zatim ih instalirajte:
+## Debug
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+Ako želiš ručno osvježiti podatke iz Sheeta:
+
+```bash
+curl -X POST http://localhost:8000/refresh-cache
+```
+
+Ako želiš očistiti cache:
+
+```bash
+curl -X POST http://localhost:8000/clear-cache
+```
 
 ---
