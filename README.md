@@ -34,32 +34,7 @@ Instaliraj sve ovisnosti:
 pip install -r requirements.txt
 ```
 
----
 
-## Konfiguracija (`.env`)
-
-Postavi sljedeće varijable u `.env` datoteku:
-
-```env
-# Google service account
-GOOGLE_KEY_PATH=./service_account.json
-SPREADSHEET_ID=...
-SPREADSHEET_SHEET_ID=0
-SPREADSHEET_USER=ime@kset.hr
-
-# OAuth
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-GOOGLE_REDIRECT_URI=http://localhost:8000/oauth/callback
-
-# PostgreSQL baza
-DB_HOST=localhost
-DB_USER=korisnik
-DB_PASSWORD=lozinka
-DB_NAME=verifikacija
-```
-
----
 
 ## Arhitektura
 
